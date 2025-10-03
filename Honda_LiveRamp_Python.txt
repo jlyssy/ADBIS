@@ -1,0 +1,221 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Fri Jan 31 15:16:33 2025
+
+@author: amorales
+"""
+
+import warnings
+import pandas as pd
+import numpy as np
+import hashlib
+import paramiko
+import math
+from pandas.errors import SettingWithCopyWarning
+warnings.simplefilter(action="ignore", category=SettingWithCopyWarning)
+warnings.simplefilter(action="ignore", category=FutureWarning)
+
+def main(): 
+    #------Variable set up--------------------------------------------------------------------------------------------------------------------------------------
+    local_path = 'C:/Users/amorales/Downloads/HND/'
+    
+    week_col = 'SRS_WEEK19_2025'
+    
+    inc_file = 'LCC_SRS_Digital_Inclusions_20250508'
+    exc_file = 'LCC_SRS_Digital_Exclusions_20250508' 
+    inc_name = 'Aletheia_SRS_Inclusions_LR_week19_2025'
+    ex_name = 'Aletheia_SRS_Exclusions_LR_week19_2025'
+    
+    inc_file_seasonal = 'Spring25_Seasonal_Digital_Aud_209020' 
+    inc_name_seasonal = 'Aletheia_SEASONAL_Inclusions_LR_week14_update_2025'
+    week_col_seasonal = 'SEASSONAL_WEEK14_update_2025'
+    
+    #------SRS--------------------------------------------------------------------------------------------------------------------------------------
+    inc_raw_data = pd.read_csv(local_path+inc_file+".txt", low_memory=False, dtype={'SDLR_ZIP': int}, sep='|')
+
+    inc_raw_data['SEGMENT_NAME'] = ((inc_raw_data['MAKE'])+'_'+(inc_raw_data['COVER_ASSET'])+'_'+((inc_raw_data['LANDING_PAGE_URL'].str.split('UNIQUE_ID=',expand=True)[1]).str.split('&',expand=True)[0])+'_'+((inc_raw_data['SDLR_NAME'].str.replace(' ','')).str.replace('.',''))+'_'+(inc_raw_data['SDLR_ZIP'].astype(str)))
+    inc_raw_data[week_col] = ((inc_raw_data['LANDING_PAGE_URL'].str.split('UNIQUE_ID=',expand=True)[1]).str.split('&',expand=True)[0])+"_"+(inc_raw_data['TEST_CELL'])
+    #inc_raw_data['SEGMENT_NAME'] = (inc_raw_data['SEGMENT_NAME'].str.replace('ARETD','RetentionDriver')).str.replace('HRETD','RetentionDriver')
+    #inc_raw_data['SEGMENT_NAME'] = (inc_raw_data['SEGMENT_NAME'].str.replace('ALAST','LastChance')).str.replace('HLAST','LastChance')
+    
+    inc_segments = inc_raw_data['SEGMENT_NAME'].unique()
+    segment_number = len(inc_segments)
+    print(f'Total number of segmetns this week: {segment_number}')
+    
+    if 'ADDRESS1' in inc_raw_data.columns:
+        adr = 'ADDRESS1'
+    elif 'ADDRESS' in inc_raw_data.columns:
+        adr = 'ADDRESS'
+        
+    upload_df = inc_raw_data.loc[:,['FIRSTNAME', 'LASTNAME',adr,'CITY','STATE', 'ZIP','EMAIL','MAKE','MODEL','LANDING_PAGE_URL',week_col]]
+    upload_df['ADDRESS2'] = np.nan
+    upload_df['EMAIL2'] = np.nan
+    upload_df['EMAIL3'] = np.nan
+    upload_df['EMAIL4'] = np.nan
+    upload_df['PHONE1'] = np.nan
+    upload_df['PHONE2'] = np.nan
+    upload_df.rename(columns={adr: 'ADDRESS1','EMAIL':'EMAIL1'}, inplace=True)
+    upload_df = upload_df[['FIRSTNAME', 'LASTNAME','ADDRESS1','ADDRESS2','CITY','STATE','ZIP','EMAIL1','EMAIL2','EMAIL3','EMAIL4','PHONE1','PHONE2','MAKE','MODEL','LANDING_PAGE_URL',week_col]]
+    inc_SRS = inc_raw_data[week_col].unique()
+    cols_split = math.ceil(len(inc_SRS)/250)
+  
+    File_df = pd.DataFrame(columns=['FIRSTNAME', 'LASTNAME','ADDRESS1','ADDRESS2','CITY','STATE','ZIP','EMAIL1','EMAIL2','EMAIL3','EMAIL4','PHONE1','PHONE2','MAKE','MODEL','LANDING_PAGE_URL',week_col])
+    key_cols = ['FIRSTNAME', 'LASTNAME','ADDRESS1','ADDRESS2','CITY','STATE','ZIP','EMAIL1','EMAIL2','EMAIL3','EMAIL4','PHONE1','PHONE2','MAKE','MODEL','LANDING_PAGE_URL',week_col]
+    j=0
+    while j<cols_split:
+        #File_df = pd.DataFrame(columns=['FIRSTNAME', 'LASTNAME','ADDRESS1','ADDRESS2','CITY','STATE','ZIP','EMAIL1','EMAIL2','EMAIL3','EMAIL4','PHONE1','PHONE2','MAKE','MODEL'])
+        if j==0:
+            start = 0
+            end = 250
+        elif ((j*250)+250) > (len(inc_SRS)):
+            start = j * 250
+            end = len(inc_SRS)
+        else:
+            start = j * 250
+            end = (j*250)+250
+        
+        col_segments = inc_SRS[start:end]
+        print(f'The current slice start: {start} end: {end}')
+        print(f'Col segment length {len(col_segments)}')
+        temp = upload_df[upload_df[week_col].isin(col_segments)]
+        print(f'Temp length {len(temp)}')
+        #temp.rename(columns={week_col: week_col+"_"+str(j+1)}, inplace=True)
+        temp[week_col+"_"+str(j+1)] = temp[week_col]
+        File_df = pd.merge(File_df, temp, left_on=key_cols,right_on=key_cols,how='outer',suffixes=('',''))
+        
+        j+=1
+    
+    url_match_table = File_df[['LANDING_PAGE_URL',week_col]]
+    url_match_table = url_match_table.groupby(['LANDING_PAGE_URL',week_col], as_index=False).count()
+    url_match_table.to_csv(local_path+inc_name+"_URLMATCH.csv", index=False)   
+    File_df = File_df.drop([week_col,'LANDING_PAGE_URL'], axis=1)
+    
+    #---------SRS Exc-------------------------------------------------------------------------------------------------------------
+    exc_raw_data = pd.read_csv(local_path+exc_file+".txt", low_memory=False, sep='|')
+    
+    exc_emails = pd.DataFrame()
+    exc_emails['md5_hash'] = pd.DataFrame(exc_raw_data['EMAIL'])
+    exc_emails['sha1_hash'] = pd.DataFrame(exc_raw_data['EMAIL'])
+    exc_emails['sha256_hash'] = pd.DataFrame(exc_raw_data['EMAIL'])
+    exc_emails = exc_emails.dropna()
+    
+    exc_emails['md5_hash'] = exc_emails['md5_hash'].apply(lambda x: hashlib.md5(x.encode()).hexdigest())
+    exc_emails['sha1_hash'] = exc_emails['sha1_hash'].apply(lambda x: hashlib.sha1(x.encode()).hexdigest())
+    exc_emails['sha256_hash'] = exc_emails['sha256_hash'].apply(lambda x: hashlib.sha256(x.encode()).hexdigest())
+    
+    #------Seasonal--------------------------------------------------------------------------------------------------------------------------------------
+    
+    seas_raw_data = pd.read_csv(local_path+inc_file_seasonal+".txt", low_memory=False, dtype={'SDLR_ZIP': int}, sep='|')
+
+    seas_raw_data['SEGMENT_NAME'] = ((seas_raw_data['MAKE'])+'_'+(seas_raw_data['COVER_ASSET'])+'_'+((seas_raw_data['LANDING_PAGE_URL'].str.split('UNIQUE_ID=',expand=True)[1]).str.split('&',expand=True)[0])+'_'+((seas_raw_data['SDLR_NAME'].str.replace(' ','')).str.replace('.',''))+'_'+(seas_raw_data['SDLR_ZIP'].astype(str)))
+    seas_raw_data[week_col_seasonal] = ((seas_raw_data['LANDING_PAGE_URL'].str.split('UNIQUE_ID=',expand=True)[1]).str.split('&',expand=True)[0])+"_"+(seas_raw_data['TEST_CELL'])
+    
+    inc_segments_seas = seas_raw_data['SEGMENT_NAME'].unique()
+    segment_number = len(inc_segments_seas)
+    print(f'Total number of segmetns this week: {segment_number}')
+    
+    if 'ADDRESS1' in seas_raw_data.columns:
+        adr = 'ADDRESS1'
+    elif 'ADDRESS' in seas_raw_data.columns:
+        adr = 'ADDRESS'
+        
+    upload_df = seas_raw_data.loc[:,['FNAME', 'LNAME',adr,'CITY','STATE', 'ZIP','EMAIL','MAKE','MODEL','LANDING_PAGE_URL',week_col_seasonal]]
+    upload_df['ADDRESS2'] = np.nan
+    upload_df['EMAIL2'] = np.nan
+    upload_df['EMAIL3'] = np.nan
+    upload_df['EMAIL4'] = np.nan
+    upload_df['PHONE1'] = np.nan
+    upload_df['PHONE2'] = np.nan
+    upload_df.rename(columns={adr: 'ADDRESS1','EMAIL':'EMAIL1','FNAME':'FIRSTNAME','LNAME':'LASTNAME'}, inplace=True)
+    upload_df = upload_df[['FIRSTNAME', 'LASTNAME','ADDRESS1','ADDRESS2','CITY','STATE','ZIP','EMAIL1','EMAIL2','EMAIL3','EMAIL4','PHONE1','PHONE2','MAKE','MODEL','LANDING_PAGE_URL',week_col_seasonal]]
+    inc_seas = seas_raw_data[week_col_seasonal].unique()
+    cols_split = math.ceil(len(inc_seas)/250)
+  
+    File_df_seas = pd.DataFrame(columns=['FIRSTNAME', 'LASTNAME','ADDRESS1','ADDRESS2','CITY','STATE','ZIP','EMAIL1','EMAIL2','EMAIL3','EMAIL4','PHONE1','PHONE2','MAKE','MODEL','LANDING_PAGE_URL',week_col_seasonal])
+    key_cols = ['FIRSTNAME', 'LASTNAME','ADDRESS1','ADDRESS2','CITY','STATE','ZIP','EMAIL1','EMAIL2','EMAIL3','EMAIL4','PHONE1','PHONE2','MAKE','MODEL','LANDING_PAGE_URL',week_col_seasonal]
+    j=0
+    while j<cols_split:
+
+        if j==0:
+            start = 0
+            end = 250
+        elif ((j*250)+250) > (len(inc_seas)):
+            start = j * 250
+            end = len(inc_seas)
+        else:
+            start = j * 250
+            end = (j*250)+250
+        
+        col_segments = inc_seas[start:end]
+        print(f'The current slice start: {start} end: {end}')
+        print(f'Col segment length {len(col_segments)}')
+        temp = upload_df[upload_df[week_col_seasonal].isin(col_segments)]
+        print(f'Temp length {len(temp)}')
+        #temp.rename(columns={week_col_seasonal: week_col_seasonal+"_"+str(j+1)}, inplace=True)
+        temp[week_col_seasonal+"_"+str(j+1)] = temp[week_col_seasonal]
+        File_df_seas = pd.merge(File_df_seas, temp, left_on=key_cols,right_on=key_cols,how='outer',suffixes=('',''))
+        
+        j+=1
+    
+    url_match_table = File_df_seas[['LANDING_PAGE_URL',week_col_seasonal]]
+    url_match_table = url_match_table.groupby(['LANDING_PAGE_URL',week_col_seasonal], as_index=False).count()
+    url_match_table.to_csv(local_path+inc_name_seasonal+"_URLMATCH.csv", index=False)    
+    File_df_seas = File_df_seas.drop([week_col_seasonal,'LANDING_PAGE_URL'], axis=1)
+    File_df_seas.to_csv(local_path+inc_name_seasonal+".csv", index=False)
+    
+    #---------Inclusion Upload------------------------------------------------------------------------------------------------------------
+    ssh_client = paramiko.SSHClient()
+    ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    host = "files.liveramp.com"
+    port = 22  
+    username = "aletheia-american-honda"
+    password = "AletheiaLRamp!$1"
+
+    remote_filepath = "/uploads/aletheia_american_honda/"+inc_name+".csv"
+    ssh_client.connect(host, port, username, password)
+    sftp_client = ssh_client.open_sftp()
+    
+    with sftp_client.open(remote_filepath, "w") as s:
+        s.write(File_df.to_csv(index=False))
+    
+    sftp_client.close()
+    ssh_client.close()
+    
+    #---------Seasonal Upload------------------------------------------------------------------------------------------------------------
+    ssh_client = paramiko.SSHClient()
+    ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    host = "files.liveramp.com"
+    port = 22  
+    username = "aletheia-american-honda"
+    password = "AletheiaLRamp!$1"
+
+    remote_filepath = "/uploads/aletheia_american_honda/"+inc_name_seasonal+".csv"
+    ssh_client.connect(host, port, username, password)
+    sftp_client = ssh_client.open_sftp()
+    
+    with sftp_client.open(remote_filepath, "w") as s:
+        s.write(File_df_seas.to_csv(index=False))
+    
+    sftp_client.close()
+    ssh_client.close()
+    
+    #---------Exclusion Upload------------------------------------------------------------------------------------------------------------
+    ssh_client = paramiko.SSHClient()
+    ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    host = "files.liveramp.com"
+    port = 22  
+    username = "aletheia-american-honda"
+    password = "AletheiaLRamp!$1"
+
+    remote_filepath = "/uploads/aletheia_opt_out/"+ex_name+".csv"
+    ssh_client.connect(host, port, username, password)
+    sftp_client = ssh_client.open_sftp()
+    
+    with sftp_client.open(remote_filepath, "w") as s:
+        s.write(exc_emails.to_csv(index=False))
+    
+    sftp_client.close()
+    ssh_client.close()
+    
+if __name__ == '__main__':
+  main()
