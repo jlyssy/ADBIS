@@ -1,0 +1,84 @@
+Dreamshop Liveramp
+· python
+#!/usr/bin/env python3
+    client.connect(hostname=host, port=port, username=username, pkey=pkey, look_for_keys=False)
+    try:
+        with client.open_sftp() as sftp:
+            sftp.put(str(local_path), remote_path)
+    finally:
+        client.close()
+
+
+
+
+# ------------------------------
+# CLI
+# ------------------------------
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="DreamShop → LiveRamp transformer")
+    sub = parser.add_subparsers(dest="cmd", required=True)
+
+
+    # inclusions
+    p_inc = sub.add_parser("inclusions", help="Create initial inclusion file (wide)")
+    p_inc.add_argument("--input", required=True, type=Path)
+    p_inc.add_argument("--sep", default="|", help="Input delimiter (default: '|')")
+    p_inc.add_argument("--outdir", required=True, type=Path)
+    p_inc.add_argument("--campaign", default="DreamShop")
+    p_inc.add_argument("--segment-col", default=None, help="Column to read segment codes from (default: auto-detect)")
+    p_inc.add_argument("--date", default=None, help="Override yyyymmdd in filenames")
+
+
+    # exclusions
+    p_exc = sub.add_parser("exclusions", help="Create weekly exclusion (hashed emails)")
+    p_exc.add_argument("--input", required=True, type=Path)
+    p_exc.add_argument("--sep", default=",", help="Input delimiter (default: ',')")
+    p_exc.add_argument("--outdir", required=True, type=Path)
+    p_exc.add_argument("--campaign", default="DreamShop")
+    p_exc.add_argument("--id-col", default="EMAIL", help="Identifier column (default: EMAIL; EMAIL1 also supported)")
+    p_exc.add_argument(
+        "--hashes",
+        default="sha256",
+        help="Comma-separated list of hash algos (sha256,md5,sha1). Default: sha256",
+    )
+    p_exc.add_argument("--label", default="week", help="Label used in filename, e.g., week19_2025")
+    p_exc.add_argument("--date", default=None, help="Override yyyymmdd in filenames")
+
+
+    # upload
+    p_up = sub.add_parser("upload", help="Upload a file via SFTP (key-based)")
+    p_up.add_argument("--local", required=True, type=Path)
+    p_up.add_argument("--remote", required=True)
+    p_up.add_argument("--host", required=True)
+    p_up.add_argument("--username", required=True)
+    p_up.add_argument("--key", required=True, type=Path)
+    p_up.add_argument("--known-hosts", default=None, type=Path)
+    p_up.add_argument("--port", default=22, type=int)
+
+
+    args = parser.parse_args()
+
+
+    if args.cmd == "inclusions":
+        df = read_table(args.input, args.sep)
+        seg_src = choose_segment_source(df, args.segment_col)
+        inc = build_inclusion(df, seg_src)
+        path = write_inclusion_files(inc, df, args.outdir, args.campaign, args.date)
+        print(f"Inclusion file written: {path}")
+    elif args.cmd == "exclusions":
+        df = read_table(args.input, args.sep)
+        algos = [a.strip().lower() for a in args.hashes.split(",") if a.strip()]
+        excl = build_exclusions(df, id_col=args.id_col, hashes=algos)
+        path = write_exclusion_file(excl, args.outdir, args.campaign, args.label, args.date)
+        print(f"Exclusion file written: {path}")
+    elif args.cmd == "upload":
+        sftp_upload(args.local, args.remote, args.host, args.username, args.key, args.known_hosts, args.port)
+        print(f"Uploaded {args.local} → {args.remote}")
+
+
+
+
+if __name__ == "__main__":
+    main()
